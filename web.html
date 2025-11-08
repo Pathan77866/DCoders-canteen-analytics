@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Smart Canteen Analytics</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root{--bg:#0b2545;--card:#ffffff;--muted:#6b7280;--accent:#ffb703}
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,-apple-system,"Helvetica Neue",Arial}
+    body{background:linear-gradient(180deg,#06203a 0%, #08314e 100%);color:#0b2440;padding:24px}
+    .container{max-width:1000px;margin:0 auto;background:var(--card);border-radius:12px;padding:20px;box-shadow:0 10px 30px rgba(2,6,23,0.25)}
+    h1{margin:0 0 8px;font-size:22px}
+    p.subtitle{color:var(--muted);margin:0 0 18px}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    .card{background:#f8fafc;padding:12px;border-radius:10px;flex:1;min-width:260px}
+    label{display:block;font-size:13px;color:#374151;margin-bottom:6px}
+    input[type=file]{display:block}
+    button{background:var(--accent);border:none;color:#02203a;padding:8px 12px;border-radius:8px;cursor:pointer;font-weight:600}
+    .metrics{display:flex;gap:12px;margin-top:12px}
+    .metric{background:white;padding:10px;border-radius:8px;flex:1;text-align:center}
+    table{width:100%;border-collapse:collapse;margin-top:12px}
+    th,td{padding:8px;border-bottom:1px solid #e6eef7;text-align:left}
+    .charts{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+    .small{font-size:13px;color:#374151}
+    .center{display:flex;align-items:center;justify-content:center}
+    footer{margin-top:14px;font-size:13px;color:var(--muted)}
+    @media(max-width:740px){.charts{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Smart Canteen Analytics</h1>
+    <p class="subtitle">Upload your Menu CSV and Sales CSV to generate daily insights, top items and veg/non-veg ratios.</p>
+
+    <div class="row">
+      <div class="card">
+        <label>Menu CSV (columns: Item, Category, Price)</label>
+        <input id="menuFile" type="file" accept=".csv" />
+        <small class="small">Example: "Samosa,veg,15"</small>
+      </div>
+
+      <div class="card">
+        <label>Sales CSV (columns: Date, Item, Quantity)</label>
+        <input id="salesFile" type="file" accept=".csv" />
+        <small class="small">Date format: YYYY-MM-DD. Example: "2025-11-01,Samosa,3"</small>
+      </div>
+
+      <div class="card center" style="min-width:160px;flex-direction:column">
+        <label>&nbsp;</label>
+        <button id="processBtn">Process Data</button>
+        <div style="height:8px"></div>
+        <button id="sampleBtn" style="background:#e6eef7;color:#02203a">Load Sample</button>
+      </div>
+    </div>
+
+    <div class="metrics" id="metrics" style="display:none">
+      <div class="metric">
+        <div class="small">Total Revenue</div>
+        <div id="totalRevenue">₹0</div>
+      </div>
+      <div class="metric">
+        <div class="small">Unique Items Sold</div>
+        <div id="uniqueItems">0</div>
+      </div>
+      <div class="metric">
+        <div class="small">Days of Sales</div>
+        <div id="daysCount">0</div>
+      </div>
+    </div>
+
+    <div class="charts" id="charts" style="display:none">
+      <div class="card">
+        <div class="small">Daily Revenue</div>
+        <canvas id="dailyChart" height="180"></canvas>
+      </div>
+      <div class="card">
+        <div class="small">Veg vs Non-Veg (Revenue)</div>
+        <canvas id="vegChart" height="180"></canvas>
+      </div>
+    </div>
+
+    <div id="topSection" style="display:none">
+      <div class="card" style="margin-top:12px">
+        <div class="small">Top 5 Items (by revenue)</div>
+        <table id="topTable"><thead><tr><th>Item</th><th>Category</th><th>Revenue</th><th>Quantity</th></tr></thead><tbody></tbody></table>
+      </div>
+
+      <div class="row" style="margin-top:12px">
+        <div class="card">
+          <div class="small">All joined sales (Date, Item, Qty, Price, Revenue)</div>
+          <table id="joinedTable"><thead><tr><th>Date</th><th>Item</th><th>Qty</th><th>Price</th><th>Revenue</th></tr></thead><tbody></tbody></table>
+        </div>
+
+        <div class="card center" style="min-width:200px;flex-direction:column">
+          <label>&nbsp;</label>
+          <button id="downloadSummary">Download Summary CSV</button>
+          <div style="height:8px"></div>
+          <button id="downloadExcel" disabled>Download as CSV (Joined)</button>
+        </div>
+      </div>
+    </div>
+
+    <footer>Built for the "Smart Canteen Analytics" challenge. Upload two CSVs or use sample data.</footer>
+  </div>
+
+  <!-- External libs (PapaParse + Chart.js) -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+  <script>
+    // Utility: parse CSV file input -> Promise of array of objects
+    function parseFile(file){
+      return new Promise((res,rej)=>{
+        if(!file) return res(null);
+        Papa.parse(file,{header:true,skipEmptyLines:true,complete:function(results){res(results.data);},error:rej});
+      });
+    }
+
+    // Simple parser for number fields
+    function toNumber(v){
+      if(v===undefined || v===null) return 0;
+      v = (''+v).replace(/[₹,]/g,'').trim();
+      const n = Number(v);
+      return isNaN(n)?0:n;
+    }
+
+    // Read files
+    document.getElementById('processBtn').addEventListener('click',async()=>{
+      const menuFile=document.getElementById('menuFile').files[0];
+      const salesFile=document.getElementById('salesFile').files[0];
+      const menuData = await parseFile(menuFile);
+      const salesData = await parseFile(salesFile);
+      if(!menuData || !salesData){ alert('Please upload both Menu and Sales CSV files (or use Sample).'); return; }
+      processData(menuData,salesData);
+    });
+
+    // Sample data to help user quickly test
+    document.getElementById('sampleBtn').addEventListener('click',()=>{
+      const menu=[
+        {Item:'Samosa',Category:'veg',Price:'15'},
+        {Item:'Tea',Category:'veg',Price:'10'},
+        {Item:'Veg Roll',Category:'veg',Price:'50'},
+        {Item:'Chicken Roll',Category:'non-veg',Price:'80'},
+        {Item:'Burger',Category:'non-veg',Price:'100'}
+      ];
+      const sales=[];
+      const days=['2025-11-01','2025-11-02','2025-11-03','2025-11-04','2025-11-05'];
+      for(const d of days){
+        sales.push({Date:d,Item:'Samosa',Quantity:Math.floor(Math.random()*40)+5});
+        sales.push({Date:d,Item:'Tea',Quantity:Math.floor(Math.random()*60)+10});
+        sales.push({Date:d,Item:'Veg Roll',Quantity:Math.floor(Math.random()*20)+2});
+        sales.push({Date:d,Item:'Chicken Roll',Quantity:Math.floor(Math.random()*18)+1});
+        sales.push({Date:d,Item:'Burger',Quantity:Math.floor(Math.random()*15)+1});
+      }
+      processData(menu,sales);
+    });
+
+    let dailyChart=null, vegChart=null;
+
+    function processData(menuData,salesData){
+      // normalize menu -> map by item
+      const menuMap = new Map();
+      for(const r of menuData){
+        if(!r.Item) continue;
+        menuMap.set(r.Item.trim(),{category:(r.Category||'').trim().toLowerCase(),price:toNumber(r.Price)});
+      }
+
+      // join sales
+      const joined = [];
+      for(const s of salesData){
+        if(!s.Item) continue;
+        const item = s.Item.trim();
+        const qty = toNumber(s.Quantity || s.Qty || s.QuantitySold || s['Quantity Sold']);
+        const menuItem = menuMap.get(item) || {category:'unknown',price:0};
+        const revenue = qty * menuItem.price;
+        joined.push({Date:(s.Date||s.date||s.D).trim?.()||s.Date, Item:item, Qty:qty, Price:menuItem.price, Category:menuItem.category, Revenue:revenue});
+      }
+
+      // aggregate daily revenue
+      const daily = new Map();
+      const itemAgg = new Map();
+      const vegAgg = {veg:0, 'non-veg':0, unknown:0};
+      for(const r of joined){
+        const d = r.Date;
+        daily.set(d, (daily.get(d)||0) + r.Revenue);
+        const it = r.Item;
+        if(!itemAgg.has(it)) itemAgg.set(it,{qty:0,revenue:0,category:r.Category});
+        const cur = itemAgg.get(it);
+        cur.qty += r.Qty;
+        cur.revenue += r.Revenue;
+        const cat = r.Category || 'unknown';
+        if(cat.includes('veg')) vegAgg.veg += r.Revenue;
+        else if(cat.includes('non')) vegAgg['non-veg'] += r.Revenue;
+        else vegAgg.unknown += r.Revenue;
+      }
+
+      // sort daily
+      const dailySorted = Array.from(daily.entries()).sort((a,b)=>new Date(a[0]) - new Date(b[0]));
+      const days = dailySorted.map(x=>x[0]);
+      const revenues = dailySorted.map(x=>x[1]);
+
+      // top 5 items
+      const top = Array.from(itemAgg.entries()).map(([item,v])=>({item,qty:v.qty,revenue:v.revenue,category:v.category})).sort((a,b)=>b.revenue-a.revenue).slice(0,5);
+
+      // show metrics
+      document.getElementById('metrics').style.display='flex';
+      document.getElementById('charts').style.display='grid';
+      document.getElementById('topSection').style.display='block';
+      document.getElementById('totalRevenue').innerText = '₹' + (revenues.reduce((a,b)=>a+b,0)).toFixed(2);
+      document.getElementById('uniqueItems').innerText = itemAgg.size;
+      document.getElementById('daysCount').innerText = days.length;
+
+      // render tables
+      const topBody = document.querySelector('#topTable tbody'); topBody.innerHTML='';
+      for(const t of top){
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${t.item}</td><td>${t.category}</td><td>₹${t.revenue.toFixed(2)}</td><td>${t.qty}</td>`;
+        topBody.appendChild(tr);
+      }
+
+      const joinedBody = document.querySelector('#joinedTable tbody'); joinedBody.innerHTML='';
+      for(const r of joined){
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${r.Date}</td><td>${r.Item}</td><td>${r.Qty}</td><td>₹${r.Price.toFixed(2)}</td><td>₹${r.Revenue.toFixed(2)}</td>`;
+        joinedBody.appendChild(tr);
+      }
+
+      // draw charts
+      if(dailyChart) dailyChart.destroy();
+      const ctx = document.getElementById('dailyChart');
+      dailyChart = new Chart(ctx, {type:'line',data:{labels:days, datasets:[{label:'Daily Revenue',data:revenues,fill:true,tension:0.3}]}, options:{scales:{y:{beginAtZero:true}}}});
+
+      if(vegChart) vegChart.destroy();
+      const vctx = document.getElementById('vegChart');
+      vegChart = new Chart(vctx, {type:'pie',data:{labels:['Veg','Non-Veg','Unknown'],datasets:[{data:[vegAgg.veg,vegAgg['non-veg'],vegAgg.unknown]}]}});
+
+      // enable downloads
+      document.getElementById('downloadSummary').onclick = ()=>downloadSummary(top,dailySorted,vegAgg);
+      document.getElementById('downloadExcel').onclick = ()=>downloadCSV(joined,'joined_sales.csv');
+      document.getElementById('downloadExcel').disabled=false;
+    }
+
+    // download helpers
+    function downloadCSV(rows,filename){
+      // rows: array of objects or array-of-arrays
+      let csv='';
+      if(rows.length===0) csv = '';
+      else if(typeof rows[0] === 'object' && !Array.isArray(rows[0])){
+        const headers = Object.keys(rows[0]);
+        csv += headers.join(',') + '\n';
+        for(const r of rows){
+          csv += headers.map(h=>`"${(''+(r[h]||'')).replace(/"/g,'""')}"`).join(',') + '\n';
+        }
+      } else {
+        for(const r of rows) csv += r.join(',') + '\n';
+      }
+      const blob = new Blob([csv],{type:'text/csv'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = filename || 'data.csv'; a.click(); URL.revokeObjectURL(url);
+    }
+
+    function downloadSummary(top,dailySorted,vegAgg){
+      // produce a compact summary CSV with sections
+      let lines = [];
+      lines.push(['Summary Report']);
+      lines.push(['Total Revenue', dailySorted.reduce((a,b)=>a+ b[1],0)]);
+      lines.push([]);
+      lines.push(['Top 5 Items']);
+      lines.push(['Item','Revenue','Qty','Category']);
+      for(const t of top) lines.push([t.item, t.revenue.toFixed(2), t.qty, t.category]);
+      lines.push([]);
+      lines.push(['Daily Revenue']);
+      lines.push(['Date','Revenue']);
+      for(const d of dailySorted) lines.push([d[0], d[1].toFixed(2)]);
+      lines.push([]);
+      lines.push(['VegRevenue',vegAgg.veg.toFixed(2)]);
+      lines.push(['NonVegRevenue',vegAgg['non-veg'].toFixed(2)]);
+      downloadCSV(lines,'canteen_summary.csv');
+    }
+
+  </script>
+</body>
+</html>
